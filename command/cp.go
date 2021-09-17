@@ -8,8 +8,11 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/hashicorp/go-multierror"
 	"github.com/urfave/cli/v2"
@@ -178,6 +181,10 @@ func NewCopyCommandFlags() []cli.Flag {
 			Name:  "raw",
 			Usage: "disable the wildcard operations, useful with filenames that contains glob characters.",
 		},
+		&cli.BoolFlag{
+			Name:  "preserve",
+			Usage: "Preserve filesystem attributes.",
+		},
 	}
 }
 
@@ -228,6 +235,7 @@ type Copy struct {
 	raw                  bool
 	cacheControl         string
 	expires              string
+	preserve             bool
 
 	// region settings
 	srcRegion string
@@ -264,6 +272,8 @@ func NewCopy(c *cli.Context, deleteSource bool) Copy {
 		raw:                  c.Bool("raw"),
 		cacheControl:         c.String("cache-control"),
 		expires:              c.String("expires"),
+		preserve:             c.Bool("preserve"),
+
 		// region settings
 		srcRegion: c.String("source-region"),
 		dstRegion: c.String("destination-region"),
@@ -489,6 +499,50 @@ func (c Copy) doDownload(ctx context.Context, srcurl *url.URL, dsturl *url.URL) 
 		return err
 	}
 
+	if c.preserve {
+		objectInfo, err := srcClient.Stat(ctx, srcurl)
+		if err != nil {
+			return err
+		}
+		if objectInfo.FileAttributes != "" {
+			attrs := strings.Split(objectInfo.FileAttributes, "/")
+			attrMap := make(map[string]string)
+			for _, v := range attrs {
+				attr := strings.Split(v, ":")
+				attrMap[attr[0]] = attr[1]
+			}
+
+			// mode
+			u, err := strconv.ParseUint(attrMap["mode"], 10, 32)
+			if err == nil {
+				u32 := uint32(u)
+				mode := os.FileMode(u32)
+				file.Chmod(mode)
+			}
+
+			// Set file ownership to username and group name,
+			// if they don't exist in system fall back to uid/gid.
+			// If uid/gid don't exist, fall back to 0
+			uid := 0
+			gid := 0
+			usr, err := user.Lookup(attrMap["uname"])
+			if err != nil {
+				uid, _ = strconv.Atoi(attrMap["uid"])
+			} else {
+				uid, _ = strconv.Atoi(usr.Uid)
+			}
+
+			grp, err := user.LookupGroup(attrMap["gname"])
+			if err != nil {
+				gid, _ = strconv.Atoi(attrMap["gid"])
+			} else {
+				gid, _ = strconv.Atoi(grp.Gid)
+			}
+			file.Chown(uid, gid)
+
+		}
+	}
+
 	if c.deleteSource {
 		_ = srcClient.Delete(ctx, srcurl)
 	}
@@ -533,6 +587,34 @@ func (c Copy) doUpload(ctx context.Context, srcurl *url.URL, dsturl *url.URL) er
 		return err
 	}
 
+	var fileAttrs string
+	if c.preserve {
+		var attrs []string
+		info, err := file.Stat()
+		if err == nil {
+			stat := info.Sys().(*syscall.Stat_t)
+			uid := stat.Uid
+			gid := stat.Gid
+			attrs = append(attrs, "mode:"+fmt.Sprint(stat.Mode))
+
+			attrs = append(attrs, "uid:"+fmt.Sprint(uid))
+			attrs = append(attrs, "gid:"+fmt.Sprint(gid))
+
+			u := strconv.FormatUint(uint64(uid), 10)
+			g := strconv.FormatUint(uint64(gid), 10)
+
+			usr, err := user.LookupId(u)
+			if err == nil {
+				attrs = append(attrs, "uname:"+usr.Username)
+			}
+			group, err := user.LookupGroupId(g)
+			if err == nil {
+				attrs = append(attrs, "gname:"+group.Name)
+			}
+			fileAttrs = strings.Join(attrs, "/")
+		}
+	}
+
 	metadata := storage.NewMetadata().
 		SetContentType(guessContentType(file)).
 		SetStorageClass(string(c.storageClass)).
@@ -541,6 +623,10 @@ func (c Copy) doUpload(ctx context.Context, srcurl *url.URL, dsturl *url.URL) er
 		SetACL(c.acl).
 		SetCacheControl(c.cacheControl).
 		SetExpires(c.expires)
+
+	if fileAttrs != "" {
+		metadata.SetFilesystemAttributes(fileAttrs)
+	}
 
 	err = dstClient.Put(ctx, file, dsturl, metadata, c.concurrency, c.partSize)
 	if err != nil {

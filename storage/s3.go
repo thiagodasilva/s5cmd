@@ -112,11 +112,13 @@ func (s *S3) Stat(ctx context.Context, url *url.URL) (*Object, error) {
 
 	etag := aws.StringValue(output.ETag)
 	mod := aws.TimeValue(output.LastModified)
+	attrs := aws.StringValueMap(output.Metadata)
 	return &Object{
-		URL:     url,
-		Etag:    strings.Trim(etag, `"`),
-		ModTime: &mod,
-		Size:    aws.Int64Value(output.ContentLength),
+		URL:            url,
+		Etag:           strings.Trim(etag, `"`),
+		ModTime:        &mod,
+		Size:           aws.Int64Value(output.ContentLength),
+		FileAttributes: attrs["S5cmd-Attrs"],
 	}, nil
 }
 
@@ -527,6 +529,13 @@ func (s *S3) Put(
 		if sseKmsKeyID != "" {
 			input.SSEKMSKeyId = aws.String(sseKmsKeyID)
 		}
+	}
+
+	fileAttributes := metadata.FilesystemAttributes()
+	if fileAttributes != "" {
+		objMetadata := make(map[string]string)
+		objMetadata["S5cmd-Attrs"] = fileAttributes
+		input.Metadata = aws.StringMap(objMetadata)
 	}
 
 	_, err := s.uploader.UploadWithContext(ctx, input, func(u *s3manager.Uploader) {

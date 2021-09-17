@@ -83,13 +83,14 @@ func (o *Options) SetRegion(region string) {
 
 // Object is a generic type which contains metadata for storage items.
 type Object struct {
-	URL          *url.URL     `json:"key,omitempty"`
-	Etag         string       `json:"etag,omitempty"`
-	ModTime      *time.Time   `json:"last_modified,omitempty"`
-	Type         ObjectType   `json:"type,omitempty"`
-	Size         int64        `json:"size,omitempty"`
-	StorageClass StorageClass `json:"storage_class,omitempty"`
-	Err          error        `json:"error,omitempty"`
+	URL            *url.URL     `json:"key,omitempty"`
+	Etag           string       `json:"etag,omitempty"`
+	ModTime        *time.Time   `json:"last_modified,omitempty"`
+	Type           ObjectType   `json:"type,omitempty"`
+	Size           int64        `json:"size,omitempty"`
+	StorageClass   StorageClass `json:"storage_class,omitempty"`
+	Err            error        `json:"error,omitempty"`
+	FileAttributes string       `json:"file_attributes,omitempty"`
 }
 
 // String returns the string representation of Object.
@@ -259,5 +260,14 @@ func (m Metadata) SSEKeyID() string {
 
 func (m Metadata) SetSSEKeyID(kid string) Metadata {
 	m["EncryptionKeyID"] = kid
+	return m
+}
+
+func (m Metadata) FilesystemAttributes() string {
+	return m["FileAttributes"]
+}
+
+func (m Metadata) SetFilesystemAttributes(fileattrs string) Metadata {
+	m["FileAttributes"] = fileattrs
 	return m
 }
